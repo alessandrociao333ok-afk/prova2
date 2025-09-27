@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mercatino Scolastico | Libri Usati & Ripetizioni</title>
+    <!-- Caricamento di Tailwind CSS per lo styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Configurazione del font Inter -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fb;
+        }
+        /* Stili personalizzati per la reattività e l'aspetto */
+        .card-shadow {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+    <!-- Header -->
+    <header class="bg-indigo-700 shadow-lg sticky top-0 z-10">
+        <div id="header-content" class="max-w-7xl mx-auto p-4 flex justify-between items-center text-white">
+            <h1 class="text-xl font-bold tracking-tight">Mercatino <span class="text-indigo-200">Scolastico</span></h1>
+            <!-- Elementi aggiornati tramite JS -->
+        </div>
+    </header>
+
+    <!-- Contenuto Principale (Dashboard o Form di Auth) -->
+    <main id="app-container" class="flex-grow p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto"></main>
+
+    <!-- Modale per messaggi (al posto di alert) -->
+    <div id="message-modal" class="fixed inset-0 bg-gray-600 bg-opacity-75 z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl card-shadow w-full max-w-sm p-6">
+            <h3 class="text-lg font-semibold text-gray-900 mb-4" id="modal-title">Messaggio</h3>
+            <p class="text-gray-700 mb-6" id="modal-message"></p>
+            <button onclick="closeModal()" class="w-full bg-indigo-600 text-white py-2 rounded-lg font-medium hover:bg-indigo-700 transition duration-150">Chiudi</button>
+        </div>
+    </div>
+    
+    <!-- Script di Firebase e logica dell'applicazione -->
+    <script type="module">
+        // Importazioni Firebase
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, addDoc, onSnapshot, collection, query, where, Timestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Variabili Globali del Canvas
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const __initial_auth_token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Configurazione App
+        const SCHOOL_DOMAIN = '@mia-scuola.edu';
+        const MARKET_COLLECTION_NAME = 'school_market_posts';
+        
+        let app, db, auth;
+        let userId = null;
+        let isAuthReady = false;
+        let currentView = 'authChooser'; // 'feed', 'newPost', 'login', 'register', 'authChooser'
+
+        // Elementi DOM
+        const appContainer = document.getElementById('app-container');
+        const headerContent = document.getElementById('header-content');
+        const messageModal = document.getElementById('message-modal');
+        const modalTitle = document.getElementById('modal-title');
+        const modalMessage = document.getElementById('modal-message');
+
+        // Funzioni Modale (al posto di alert)
+        function showModal(title, message) {
+            modalTitle.textContent = title;
+            modalMessage.textContent = message;
+            messageModal.classList.remove('hidden');
+        }
+
+        function closeModal() {
+            messageModal.classList.add('hidden');
+        }
+
+        // --- Inizializzazione Firebase e Autenticazione ---
+        try {
+            if (Object.keys(firebaseConfig).length > 0) {
+                setLogLevel('Debug');
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                console.log("Firebase inizializzato.");
+            } else {
+                showModal("Errore", "Configurazione Firebase mancante. L'app non può funzionare correttamente.");
+                return;
+            }
+        } catch (error) {
+            console.error("Errore durante l'inizializzazione di Firebase:", error);
+            showModal("Errore Critico", "Impossibile inizializzare i servizi di Firebase.");
+            return;
+        }
+
+        // Listener dello stato di autenticazione
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                userId = user.uid;
+                if (user.email && user.email.endsWith(SCHOOL_DOMAIN)) {
+                    console.log("Utente autenticato con email scolastica:", user.email);
+                    isAuthReady = true;
+                    renderHeader();
+                    renderView(currentView);
+                    setupPostListener();
+                } else if (user.isAnonymous && __initial_auth_token) {
+                    console.log("Accesso anonimo. In attesa di login/registrazione.");
+                    // Se l'utente è anonimo (dopo il sign-in iniziale), attendiamo il login utente.
+                    isAuthReady = true; // Permetti il rendering della UI di Auth
+                    currentView = 'authChooser';
+                    renderHeader();
+                    renderView(currentView);
+                } else {
+                    // Utente loggato ma non con dominio scolastico (dovrebbe essere impedito dal frontend)
+                    showModal("Accesso Negato", `Per favore, utilizza un indirizzo email del dominio scolastico (${SCHOOL_DOMAIN}) per accedere.`);
+                    await signOut(auth);
+                    userId = null;
+                    isAuthReady = true;
+                    currentView = 'authChooser';
+                    renderHeader();
+                    renderView(currentView);
+                }
+            } else {
+                console.log("Nessun utente loggato.");
+                userId = null;
+                // Esegui il sign-in iniziale solo se non c'è già un utente
+                if (!isAuthReady) {
+                    try {
+                        if (__initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                            console.log("Accesso con token personalizzato completato.");
+                        } else {
+                            await signInAnonymously(auth);
+                            console.log("Accesso anonimo completato.");
+                        }
+                    } catch (e) {
+                        console.error("Errore di sign-in iniziale:", e);
+                        showModal("Errore di Connessione", "Impossibile connettersi ai servizi di autenticazione.");
+                    }
+                }
+                isAuthReady = true; // L'auth è pronto, anche se l'utente è anonimo/disconnesso
+                currentView = 'authChooser'; // Imposta la vista iniziale sul selettore
+                renderHeader();
+                renderView(currentView);
+            }
+        });
+
+        // --- Logica Autenticazione Utente ---
+
+        const handleSignOut = async () => {
+            try {
+                await signOut(auth);
+                showModal("Disconnessione", "Sei stato disconnesso con successo.");
+                currentView = 'authChooser'; // Torna alla pagina di scelta
+                // onAuthStateChanged gestirà il resto
+            } catch (error) {
+                console.error("Errore durante il logout:", error);
+                showModal("Errore", "Impossibile effettuare il logout.");
+            }
+        };
+
+        const handleSignUp = async (email, password) => {
+            if (!email.endsWith(SCHOOL_DOMAIN)) {
+                showModal("Errore di Dominio", `La registrazione è consentita solo con email del dominio: ${SCHOOL_DOMAIN}.`);
+                return;
+            }
+            try {
+                const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                console.log("Registrazione riuscita:", userCredential.user.email);
+                showModal("Successo", "Registrazione completata! Sei stato automaticamente loggato.");
+            } catch (error) {
+                console.error("Errore di registrazione:", error);
+                let message = "Errore durante la registrazione.";
+                if (error.code === 'auth/email-already-in-use') {
+                    message = "Questa email è già registrata. Prova ad accedere.";
+                } else if (error.code === 'auth/weak-password') {
+                    message = "La password è troppo debole (deve essere almeno 6 caratteri).";
+                }
+                showModal("Errore di Registrazione", message);
+            }
+        };
+
+        const handleSignIn = async (email, password) => {
+            if (!email.endsWith(SCHOOL_DOMAIN)) {
+                showModal("Accesso Negato", `L'accesso è consentito solo con email del dominio: ${SCHOOL_DOMAIN}.`);
+                return;
+            }
+            try {
+                const userCredential = await signInWithEmailAndPassword(auth, email, password);
+                console.log("Login riuscito:", userCredential.user.email);
+                showModal("Successo", "Accesso effettuato con successo!");
+            } catch (error) {
+                console.error("Errore di login:", error);
+                let message = "Errore durante l'accesso. Controlla email e password.";
+                if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
+                    message = "Email o password non validi.";
+                }
+                showModal("Errore di Accesso", message);
+            }
+        };
+
+        // --- Logica Firestore (Dati Pubblici) ---
+
+        const getPublicCollectionPath = (collectionName) => {
+            return `artifacts/${appId}/public/data/${collectionName}`;
+        };
+
+        let posts = [];
+
+        const setupPostListener = () => {
+            if (!db || !isAuthReady) return;
+
+            const postsRef = collection(db, getPublicCollectionPath(MARKET_COLLECTION_NAME));
+            const q = query(postsRef);
+
+            onSnapshot(q, (snapshot) => {
+                posts = [];
+                snapshot.forEach((doc) => {
+                    const data = doc.data();
+                    posts.push({ id: doc.id, ...data });
+                });
+                
+                // Ordina per data (più recenti in cima)
+                posts.sort((a, b) => (b.timestamp?.toMillis() || 0) - (a.timestamp?.toMillis() || 0));
+                
+                console.log("Dati aggiornati:", posts.length, "post.");
+                if (currentView === 'feed') {
+                    renderFeed(posts);
+                }
+            }, (error) => {
+                console.error("Errore onSnapshot:", error);
+                showModal("Errore di Sincronizzazione", "Impossibile caricare gli annunci in tempo reale.");
+            });
+        };
+
+        const handleNewPost = async (type, title, description, price, subject) => {
+            if (!db || !userId) {
+                showModal("Errore", "Accesso non autorizzato. Riprova ad accedere.");
+                return;
+            }
+
+            if (!title || !description || (type === 'book' && !price) || (type === 'tutoring' && !subject)) {
+                showModal("Errore", "Per favore, compila tutti i campi richiesti.");
+                return;
+            }
+            
+            // Sanitizzazione dei dati (essenziale)
+            const safeTitle = title.substring(0, 100);
+            const safeDescription = description.substring(0, 500);
+
+            const newPost = {
+                type: type, // 'book' o 'tutoring'
+                title: safeTitle,
+                description: safeDescription,
+                posterId: userId,
+                posterEmail: auth.currentUser.email,
+                timestamp: Timestamp.now(),
+            };
+
+            if (type === 'book') {
+                const safePrice = parseFloat(price);
+                if (isNaN(safePrice) || safePrice < 0) {
+                    showModal("Errore", "Il prezzo deve essere un numero positivo.");
+                    return;
+                }
+                newPost.price = safePrice;
+            } else if (type === 'tutoring') {
+                newPost.subject = subject.substring(0, 50);
+            }
+
+            try {
+                const docRef = await addDoc(collection(db, getPublicCollectionPath(MARKET_COLLECTION_NAME)), newPost);
+                console.log("Documento scritto con ID:", docRef.id);
+                showModal("Successo", "Il tuo annuncio è stato pubblicato! Torna al feed per vederlo.");
+                currentView = 'feed';
+                renderView('feed');
+            } catch (e) {
+                console.error("Errore nell'aggiunta del documento: ", e);
+                showModal("Errore di Pubblicazione", "Impossibile pubblicare l'annuncio. Riprova più tardi.");
+            }
+        };
+
+        // --- Funzioni di Rendering UI ---
+
+        const setView = (viewName) => {
+            currentView = viewName;
+            renderView(viewName);
+        };
+
+        // 1. Rendering Header (visibile/invisibile a seconda dell'autenticazione)
+        const renderHeader = () => {
+            headerContent.innerHTML = `
+                <h1 class="text-2xl sm:text-3xl font-extrabold tracking-tight">
+                    Mercatino <span class="text-indigo-200">Scolastico</span>
+                </h1>
+                ${auth.currentUser && auth.currentUser.email && auth.currentUser.email.endsWith(SCHOOL_DOMAIN) ? `
+                    <div class="flex items-center space-x-3 sm:space-x-4">
+                        <span class="hidden sm:inline text-sm font-light truncate">${auth.currentUser.email}</span>
+                        <button onclick="setView('feed')" class="text-white hover:text-indigo-200 transition duration-150 p-2 rounded-lg ${currentView === 'feed' ? 'bg-indigo-600' : ''}">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                            </svg>
+                            <span class="sr-only sm:not-sr-only">Feed</span>
+                        </button>
+                        <button onclick="setView('newPost')" class="bg-green-500 hover:bg-green-600 text-white p-2 rounded-full shadow-lg transition duration-150 transform hover:scale-105">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+                            </svg>
+                            <span class="sr-only">Nuovo Post</span>
+                        </button>
+                        <button onclick="handleSignOut()" class="bg-indigo-500 hover:bg-indigo-400 text-white p-2 rounded-lg transition duration-150">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                            </svg>
+                            <span class="sr-only sm:not-sr-only">Esci</span>
+                        </button>
+                    </div>
+                ` : `
+                    <button onclick="setView('authChooser')" class="bg-white text-indigo-700 py-1.5 px-4 rounded-lg font-medium hover:bg-indigo-100 transition duration-150">Accedi/Registrati</button>
+                `}
+            `;
+        };
+        
+        // 2. Rendering delle Viste Principali
+        const renderView = (view) => {
+            if (!isAuthReady) {
+                appContainer.innerHTML = `
+                    <div class="text-center p-12">
+                        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-500 mx-auto mb-4"></div>
+                        <p class="text-gray-600">Caricamento dell'applicazione...</p>
+                    </div>
+                `;
+                return;
+            }
+
+            if (!auth.currentUser || !auth.currentUser.email || !auth.currentUser.email.endsWith(SCHOOL_DOMAIN)) {
+                // Se non autenticato con email scolastica, mostra il selettore/form
+                switch (view) {
+                    case 'register':
+                        renderRegisterForm();
+                        break;
+                    case 'login':
+                        renderLoginForm();
+                        break;
+                    case 'authChooser':
+                    default:
+                        renderAuthChooser();
+                }
+                return;
+            }
+
+            // Viste per l'utente autenticato
+            switch (view) {
+                case 'feed':
+                    renderFeed(posts);
+                    break;
+                case 'newPost':
+                    renderNewPostForm();
+                    break;
+                default:
+                    renderFeed(posts);
+            }
+        };
+        
+        // 3. Viste di Autenticazione
+
+        const renderAuthChooser = () => {
+             appContainer.innerHTML = `
+                <div class="max-w-md mx-auto mt-20 p-8 bg-white rounded-xl card-shadow text-center">
+                    <h2 class="text-3xl font-bold mb-4 text-indigo-700">Benvenuto!</h2>
+                    <p class="text-gray-600 mb-8">Scegli come accedere al Mercatino Scolastico (solo per utenti <span class="font-semibold text-indigo-600">${SCHOOL_DOMAIN}</span>).</p>
+
+                    <div class="space-y-4">
+                        <button onclick="setView('login')" class="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition duration-150 transform hover:scale-[1.01]">
+                            Ho già un account (Accedi)
+                        </button>
+                        <button onclick="setView('register')" class="w-full bg-green-500 text-white py-3 rounded-lg font-semibold hover:bg-green-600 transition duration-150 transform hover:scale-[1.01]">
+                            Sono nuovo (Registrati)
+                        </button>
+                    </div>
+                </div>
+            `;
+        };
+
+        const renderLoginForm = () => {
+            appContainer.innerHTML = `
+                <div class="max-w-md mx-auto mt-10 p-6 sm:p-8 bg-white rounded-xl card-shadow">
+                    <h2 class="text-3xl font-bold mb-6 text-center text-indigo-700">Accedi al Mercatino</h2>
+                    <p class="text-center text-sm text-gray-600 mb-8">
+                        Accesso consentito solo con indirizzo email scolastico (<span class="font-semibold text-indigo-600">${SCHOOL_DOMAIN}</span>).
+                    </p>
+                    <form id="loginForm" class="space-y-6">
+                        <div>
+                            <label for="loginEmail" class="block text-sm font-medium text-gray-700">Email Scolastica</label>
+                            <input type="email" id="loginEmail" required class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
+                        </div>
+                        <div>
+                            <label for="loginPassword" class="block text-sm font-medium text-gray-700">Password</label>
+                            <input type="password" id="loginPassword" required class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
+                        </div>
+                        <button type="submit" class="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition duration-150 transform hover:scale-[1.01]">
+                            Accedi
+                        </button>
+                    </form>
+                    <p class="mt-6 text-center text-sm text-gray-600">
+                        <a href="#" onclick="setView('authChooser')" class="font-medium text-indigo-600 hover:text-indigo-500 transition duration-150">
+                            &larr; Torna alla scelta
+                        </a>
+                    </p>
+                </div>
+            `;
+
+            document.getElementById('loginForm').addEventListener('submit', (e) => {
+                e.preventDefault();
+                const email = document.getElementById('loginEmail').value.trim();
+                const password = document.getElementById('loginPassword').value;
+                handleSignIn(email, password);
+            });
+        };
+
+        const renderRegisterForm = () => {
+            appContainer.innerHTML = `
+                <div class="max-w-md mx-auto mt-10 p-6 sm:p-8 bg-white rounded-xl card-shadow">
+                    <h2 class="text-3xl font-bold mb-6 text-center text-indigo-700">Registrati</h2>
+                    <p class="text-center text-sm text-gray-600 mb-8">
+                        La registrazione richiede un indirizzo email scolastico (<span class="font-semibold text-indigo-600">${SCHOOL_DOMAIN}</span>).
+                    </p>
+                    <form id="registerForm" class="space-y-6">
+                        <div>
+                            <label for="registerEmail" class="block text-sm font-medium text-gray-700">Email Scolastica</label>
+                            <input type="email" id="registerEmail" required class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
+                        </div>
+                        <div>
+                            <label for="registerPassword" class="block text-sm font-medium text-gray-700">Password (min. 6 caratteri)</label>
+                            <input type="password" id="registerPassword" required class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
+                        </div>
+                        <button type="submit" class="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition duration-150 transform hover:scale-[1.01]">
+                            Registrati
+                        </button>
+                    </form>
+                    <p class="mt-6 text-center text-sm text-gray-600">
+                        <a href="#" onclick="setView('authChooser')" class="font-medium text-indigo-600 hover:text-indigo-500 transition duration-150">
+                            &larr; Torna alla scelta
+                        </a>
+                    </p>
+                </div>
+            `;
+
+            document.getElementById('registerForm').addEventListener('submit', (e) => {
+                e.preventDefault();
+                const email = document.getElementById('registerEmail').value.trim();
+                const password = document.getElementById('registerPassword').value;
+                handleSignUp(email, password);
+            });
+        };
+
+        // 4. Vista Feed (Visualizzazione Annunci)
+        const renderFeed = (currentPosts) => {
+            const loadingHtml = `
+                <div class="text-center p-12">
+                    <div class="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-500 mx-auto mb-4"></div>
+                    <p class="text-gray-600">Caricamento annunci...</p>
+                </div>
+            `;
+
+            appContainer.innerHTML = `
+                <h2 class="text-3xl font-extrabold text-gray-900 mb-6 border-b pb-2">Bacheca degli Annunci</h2>
+                <div id="postsList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    ${currentPosts.length === 0 ? loadingHtml : ''}
+                </div>
+            `;
+            
+            const postsList = document.getElementById('postsList');
+
+            if (currentPosts.length > 0) {
+                postsList.innerHTML = currentPosts.map(post => {
+                    const isBook = post.type === 'book';
+                    const icon = isBook ? `
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.49 9.8 4.75 8 4.75c-2.478 0-3.978 1.49-3.978 3.96c0 1.574.686 3.19 1.956 4.72C6.9 14.28 8 16 8 16h8s1.1-1.72 2.022-3.56c1.27-1.53 1.956-3.146 1.956-4.72c0-2.47-1.5-3.96-3.978-3.96C14.2 4.75 13.168 5.49 12 6.253z" />
+                        </svg>` : `
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+                        </svg>`;
+                    
+                    const formattedDate = post.timestamp ? new Date(post.timestamp.toDate()).toLocaleDateString('it-IT') : 'Data Sconosciuta';
+                    
+                    const details = isBook 
+                        ? `<p class="text-2xl font-bold text-green-600 mt-2">€ ${post.price.toFixed(2)}</p>`
+                        : `<p class="text-sm font-semibold text-purple-600 mt-2">Materia: ${post.subject}</p>`;
+
+                    return `
+                        <div class="bg-white rounded-xl p-5 card-shadow hover:shadow-xl transition duration-300 flex flex-col justify-between">
+                            <div>
+                                <div class="flex items-center space-x-3 mb-3">
+                                    ${icon}
+                                    <span class="text-xs font-medium uppercase ${isBook ? 'text-green-600 bg-green-50' : 'text-purple-600 bg-purple-50'} px-2 py-0.5 rounded-full">
+                                        ${isBook ? 'Libro Usato' : 'Ripetizione'}
+                                    </span>
+                                </div>
+                                <h3 class="text-xl font-bold text-gray-800 mb-2">${post.title}</h3>
+                                <p class="text-gray-600 text-sm mb-4">${post.description}</p>
+                                ${details}
+                            </div>
+                            
+                            <div class="mt-4 pt-4 border-t border-gray-100">
+                                <p class="text-xs text-gray-500 mb-2">Pubblicato da: ${post.posterEmail.split('@')[0]}</p>
+                                <p class="text-xs text-gray-500">Contatto: <a href="mailto:${post.posterEmail}" class="text-indigo-600 hover:underline">${post.posterEmail}</a></p>
+                                <p class="text-xs text-gray-500 mt-1">il ${formattedDate}</p>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            } else if (currentPosts.length === 0 && postsList.innerHTML === loadingHtml.trim()) {
+                postsList.innerHTML = `
+                    <div class="lg:col-span-3 text-center p-12 bg-white rounded-xl card-shadow">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 text-gray-400 mx-auto mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M4 7v10l2-2h4l2 2h2V7m-4 0h4m-4 0V5a2 2 0 012-2h2a2 2 0 012 2v2M4 7a2 2 0 012-2h2a2 2 0 012 2v2m-4 0h4m-4 0v4m-2 4h6m-3-6v-2" />
+                        </svg>
+                        <h3 class="text-lg font-semibold text-gray-900">Nessun annuncio disponibile.</h3>
+                        <p class="text-gray-600">Sii il primo a pubblicare un'offerta di libri o ripetizioni!</p>
+                    </div>
+                `;
+            }
+        };
+
+        // 5. Vista Nuovo Post
+        const renderNewPostForm = () => {
+            appContainer.innerHTML = `
+                <div class="max-w-xl mx-auto p-6 sm:p-8 bg-white rounded-xl card-shadow">
+                    <h2 class="text-3xl font-bold mb-6 text-center text-indigo-700">Crea un Nuovo Annuncio</h2>
+                    <form id="newPostForm" class="space-y-6">
+                        
+                        <!-- Tipo di Annuncio -->
+                        <div class="space-y-2">
+                            <label class="block text-sm font-medium text-gray-700">Tipo di Annuncio</label>
+                            <div class="flex space-x-4">
+                                <label class="flex items-center p-3 bg-indigo-50 border border-indigo-200 rounded-lg cursor-pointer hover:bg-indigo-100 transition duration-150">
+                                    <input type="radio" name="postType" value="book" checked class="h-4 w-4 text-indigo-600 border-gray-300 focus:ring-indigo-500" onchange="toggleFields('book')">
+                                    <span class="ml-3 text-sm font-medium text-gray-700">Vendo Libro Usato</span>
+                                </label>
+                                <label class="flex items-center p-3 bg-purple-50 border border-purple-200 rounded-lg cursor-pointer hover:bg-purple-100 transition duration-150">
+                                    <input type="radio" name="postType" value="tutoring" class="h-4 w-4 text-purple-600 border-gray-300 focus:ring-purple-500" onchange="toggleFields('tutoring')">
+                                    <span class="ml-3 text-sm font-medium text-gray-700">Offro Ripetizioni</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Titolo -->
+                        <div>
+                            <label for="postTitle" class="block text-sm font-medium text-gray-700">Titolo dell'Annuncio (max 100 caratteri)</label>
+                            <input type="text" id="postTitle" maxlength="100" required class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
+                        </div>
+                        
+                        <!-- Descrizione -->
+                        <div>
+                            <label for="postDescription" class="block text-sm font-medium text-gray-700">Descrizione (max 500 caratteri)</label>
+                            <textarea id="postDescription" rows="4" maxlength="500" required class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 resize-none"></textarea>
+                        </div>
+                        
+                        <!-- Campi Condizionali -->
+                        <div id="conditionalFields">
+                            <!-- Campo Prezzo per Libri -->
+                            <div id="priceField" class="space-y-2">
+                                <label for="postPrice" class="block text-sm font-medium text-gray-700">Prezzo (€)</label>
+                                <input type="number" step="0.01" min="0" id="postPrice" required class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500">
+                            </div>
+
+                            <!-- Campo Materia per Ripetizioni (inizialmente nascosto) -->
+                            <div id="subjectField" class="space-y-2 hidden">
+                                <label for="postSubject" class="block text-sm font-medium text-gray-700">Materia/Argomento (es. Matematica, Inglese)</label>
+                                <input type="text" id="postSubject" maxlength="50" class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-purple-500 focus:border-purple-500">
+                            </div>
+                        </div>
+
+                        <button type="submit" class="w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition duration-150 transform hover:scale-[1.01]">
+                            Pubblica Annuncio
+                        </button>
+                    </form>
+                </div>
+            `;
+
+            document.getElementById('newPostForm').addEventListener('submit', (e) => {
+                e.preventDefault();
+                const type = document.querySelector('input[name="postType"]:checked').value;
+                const title = document.getElementById('postTitle').value;
+                const description = document.getElementById('postDescription').value;
+                const price = document.getElementById('postPrice').value;
+                const subject = document.getElementById('postSubject').value;
+                
+                handleNewPost(type, title, description, price, subject);
+            });
+        };
+
+        // Funzione per mostrare/nascondere campi nel form di Nuovo Post
+        window.toggleFields = (type) => {
+            const priceField = document.getElementById('priceField');
+            const subjectField = document.getElementById('subjectField');
+            const postPrice = document.getElementById('postPrice');
+            const postSubject = document.getElementById('postSubject');
+
+            if (type === 'book') {
+                priceField.classList.remove('hidden');
+                subjectField.classList.add('hidden');
+                postPrice.setAttribute('required', 'required');
+                postSubject.removeAttribute('required');
+            } else if (type === 'tutoring') {
+                priceField.classList.add('hidden');
+                subjectField.classList.remove('hidden');
+                postSubject.setAttribute('required', 'required');
+                postPrice.removeAttribute('required');
+            }
+        };
+
+        // Esposizione delle funzioni globali per gli handler inline
+        window.setView = setView;
+        window.handleSignOut = handleSignOut;
+        window.closeModal = closeModal;
+    </script>
+</body>
+</html>
+
